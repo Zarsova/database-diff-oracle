@@ -9,6 +9,7 @@ import org.apache.poi.hssf.util.HSSFColor
 import org.apache.poi.ss.usermodel.CellStyle
 
 import java.sql.ResultSetMetaData
+import java.sql.SQLSyntaxErrorException
 
 /**
  * DatabaseDiff
@@ -189,7 +190,7 @@ class DatabaseDiff {
                         createCell(columnIdx + 1).with { cell -> cellStyle = tHeaderCellStyle.call(); setCellValue(columnName) }
                     }
                     headerColumns.eachWithIndex { columnName, int columnIdx ->
-                        createCell(columnIdx + headerColumns.size() + 1).with { cell -> cellStyle = oHeaderCellStyle.call(); setCellValue('ORG_' + columnName) }
+                        createCell(columnIdx + headerColumns.size() + 1).with { cell -> cellStyle = oHeaderCellStyle.call(); setCellValue('Z' + columnName) }
                     }
                 }
                 def tRows = rows(db, "SELECT * FROM dba_tables WHERE owner = '${target}'" as String)
@@ -231,12 +232,15 @@ class DatabaseDiff {
             def createSheetByTableName = [:]
             all.eachWithIndex { tableName, tableIdx ->
                 try {
+                    def subStr = { String str -> str.length() > 28 ? str.substring(0, 28) : str }
                     def pks = primaryKeys(db, tableName, target)
                     def tCols = columns(db, tableName, target)
                     def oCols = columns(db, tableName, org)
                     logger.info "target table: ${tableName} - pks: ${pks}, cols: ${tCols}, orgCols: ${oCols}"
                     def query = """SELECT
-${tCols.collect { "t1.${it} AS ${it}" }.join(", ")}, ${oCols.collect { "t2.${it} AS ORG_${it}" }.join(", ")}
+${tCols.collect { "t1.${it} AS ${subStr(it)}" }.join(", ")}, ${
+                        oCols.collect { "t2.${it} AS Z_${subStr(it)}" }.join(", ")
+                    }
 FROM ( SELECT ${pks.collect { "tt2.${it}" }.join(", ")}
     FROM ${org}.${tableName} tt2
       LEFT JOIN ${target}.${tableName} tt1
@@ -263,7 +267,7 @@ WHERE rownum <= $LIMIT""" as String
                                         rowResult.keySet().eachWithIndex { String key, int columnIdx ->
                                             createCell(columnIdx).with { cell ->
                                                 setCellValue(key)
-                                                if (key.startsWith("ORG_")) {
+                                                if (key.startsWith("Z_")) {
                                                     cellStyle = oHeaderCellStyle.call()
                                                 } else {
                                                     cellStyle = tHeaderCellStyle.call()
@@ -285,11 +289,11 @@ WHERE rownum <= $LIMIT""" as String
                                         def val = rowResult[key]
                                         createCell(columnIdx).with { cell ->
                                             cellStyle = tBodyCellStyle.call()
-                                            if (!key.startsWith("ORG_")) {
+                                            if (!key.startsWith("Z_")) {
                                                 def baseColumnName = key
                                                 def oVal = null
                                                 try {
-                                                    oVal = rowResult["ORG_" + key]
+                                                    oVal = rowResult["Z_" + key]
                                                 } catch (MissingPropertyException ex) {
                                                     cellStyle = tBodyAlertCellStyle.call()
                                                 }
@@ -302,7 +306,7 @@ WHERE rownum <= $LIMIT""" as String
                                                     cellStyle = tBodyAlertCellStyle.call()
                                                 }
                                             } else {
-                                                def baseColumnName = key.replace("ORG_", "")
+                                                def baseColumnName = key.replace("Z_", "")
                                                 cellStyle = oBodyCellStyle.call()
                                                 def tVal = null
                                                 try {
@@ -326,7 +330,9 @@ WHERE rownum <= $LIMIT""" as String
                         }
                     }
                 } catch (IllegalArgumentException iaex) {
-                    logger.error "Error in ${tableName}"
+                    logger.error "Error in ${tableName} (IllegalArgumentException)"
+                } catch (SQLSyntaxErrorException iaex) {
+                    logger.error "Error in ${tableName} (SQLSyntaxErrorException)"
                 }
             }
             // sheet AllTables
@@ -420,7 +426,7 @@ WHERE rownum <= $LIMIT""" as String
             def result = []
             def count = 0
             rows(sql, "SELECT * FROM DBA_TAB_COLS cols\n" +
-                    "WHERE  Cols.Owner = '${schema}'\n" +
+                    "WHERE Cols.Owner = '${schema}'\n" +
                     "and Cols.table_name = '${table}'\n" +
                     "order by Cols.Column_Id" as String).each { row ->
                 if (count <= PK_COLUMN) {
