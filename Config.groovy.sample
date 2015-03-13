@@ -1,0 +1,27 @@
+/**
+ * Config for database-diff-oracle
+ */
+
+database {
+    type = 'oracle'
+    driver = 'oracle.jdbc.driver.OracleDriver'
+    host = '127.0.0.1'    // 環境に合わせて変更して下さい
+    sid = 'xe'            // 環境に合わせて変更して下さい
+    user = 'system'       // 環境に合わせて変更して下さい
+    pass = 'manager'      // 環境に合わせて変更して下さい
+    url = "jdbc:oracle:thin:@${database.host}:1521:${database.sid}"
+}
+exclude {
+    // List<String> 形式で指定する
+    columns = [
+            //'カラム名'
+            'COMM',
+            'COMM2',
+    ]
+    // Map<String, List<String> 形式で指定する
+    table_columns = [
+            //テーブル名: ['カラム名','カラム名'...]
+            DEPT : ['DNAME', 'DNAME2'],
+            DEPT2: ['DNAME'],
+    ]
+}

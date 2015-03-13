@@ -1,0 +1,13 @@
+*~
+.gradle
+.gradle/*
+*.iws
+*.ipr
+*.iml
+tmp
+out
+build
+xlsout
+jars
+Config.groovy
+lib/ojdbc6.jar
