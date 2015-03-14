@@ -20,7 +20,6 @@ import java.sql.SQLSyntaxErrorException
 class DatabaseDiff {
     def PREFIX = "Z_"
     def RECORD_COUNT = "ZZ_RECORD_COUNT"
-
     def limit
     def pkColumn
     def user
@@ -50,7 +49,6 @@ class DatabaseDiff {
             }
         }
         logger.info "init done - target schema: ${target}, org schema: ${org}"
-
         logger.info("connect database - url: ${config.database.url}, user: ${user}, pass: ${pass}, driver: ${config.database.driver}")
         def dateString = new Date().format('yyyyMMdd-HHmmss')
         db = Sql.newInstance(config.database.url, user, pass, config.database.driver)
@@ -99,11 +97,11 @@ class DatabaseDiff {
                 if (format) style.setDataFormat(book.createDataFormat().getFormat(format))
                 style
             }.memoize()
-
             def cellStyles = [
                     tHeader     : memCellStyle(['left', 'top', 'right', 'bottom'], null, memFont("ＭＳ ゴシック", true), HSSFColor.LIGHT_GREEN, true),
                     wrapText    : memCellStyle(['left', 'top', 'right', 'bottom'], null, null, null, true),
                     tHeaderLink : memCellStyle(['left', 'top', 'right', 'bottom'], null, memFont("ＭＳ ゴシック", false, true, HSSFColor.BLUE), HSSFColor.LIGHT_GREEN, true),
+                    tBodyLink   : memCellStyle(['left', 'top', 'right', 'bottom'], null, memFont("ＭＳ ゴシック", false, true, HSSFColor.BLUE), null, false),
                     tBody       : memCellStyle(['left', 'top', 'right', 'bottom'], null, null, null, false),
                     tBodyAlert  : memCellStyle(['left', 'top', 'right', 'bottom'], null, null, HSSFColor.RED, false),
                     tBodyExclude: memCellStyle(['left', 'top', 'right', 'bottom'], null, memFont("ＭＳ ゴシック", false, false, HSSFColor.GREY_25_PERCENT), null, false),
@@ -113,13 +111,12 @@ class DatabaseDiff {
                     oBodyExclude: memCellStyle(['left', 'top', 'right', 'bottom'], null, memFont("ＭＳ ゴシック", false, false, HSSFColor.GREY_25_PERCENT), HSSFColor.LEMON_CHIFFON, false)
             ]
 
-            def createSheetByTableName = [:]
-
+            def linkTableNames = [:]
             allTables.eachWithIndex { String tableName, int tableIdx ->
                 try {
                     def allRowMode = true
                     def usedSubStr = []
-                    def subStr = { String str ->
+                    def subStr = { str ->
                         def rtn = str.length() > (30 - PREFIX.length() - 2) ?
                                 str.substring(0, (30 - PREFIX.length() - 2)) :
                                 str
@@ -145,8 +142,7 @@ FROM ( SELECT ${pks.collect { "tt2.${it}" }.join(", ")}
   LEFT JOIN ${target}.${tableName} t1
     ON ${pks.collect { "p1.${it} = t1.${it}" }.join(" AND ")}
   LEFT JOIN ${org}.${tableName} t2
-    ON ${pks.collect { "p1.${it} = t2.${it}" }.join(" AND ")}""" as String
-                    //WHERE rownum <= $limit
+    ON ${pks.collect { "p1.${it} = t2.${it}" }.join(" AND ")}""" as String //if use limit: WHERE rownum <= $limit
                     // sheet tableName
                     logger.info("create new xls file - ${tableName}")
                     logger.debug "query - " + query.replace("\n", " ").replace("\r", " ").replaceAll(" +", " ")
@@ -194,7 +190,7 @@ FROM ( SELECT ${pks.collect { "tt2.${it}" }.join(", ")}
                                         }
                                         rowIdx++
                                         createFreezePane(0, 1, 0, 1);
-                                        createSheetByTableName[tableName] = sheet.sheetName
+                                        linkTableNames[tableName] = sheet.sheetName
                                         headerOut = true
                                         if (resultSet.getInt(RECORD_COUNT) > limit) {
                                             logger.info("table: ${tableName}, recored count: ${resultSet.getInt(RECORD_COUNT)} - enable diff mode")
@@ -206,7 +202,7 @@ FROM ( SELECT ${pks.collect { "tt2.${it}" }.join(", ")}
                                     if (!allRowMode) {
                                         def tData = tColumns.collect { resultSet.getString(it) }
                                         def oData = oColumns.collect { resultSet.getString(it) }
-                                        out = (tData == oData ? false : true)
+                                        out = (tData != oData)
                                     }
                                     if (allRowMode || out) {
                                         createRow(rowIdx).with { row ->
@@ -253,8 +249,7 @@ FROM ( SELECT ${pks.collect { "tt2.${it}" }.join(", ")}
                                 }
                             }
                         } catch (IllegalArgumentException e) {
-                            logger.error "Error in ${tableName} (IllegalArgumentException: ${e})"
-                            e.printStackTrace()
+                            logger.error "Error in ${tableName}: ${e}"
                         }
 
                         if (rowIdx > 0) {
@@ -268,9 +263,8 @@ FROM ( SELECT ${pks.collect { "tt2.${it}" }.join(", ")}
                         }
                     }
                 } catch (SQLSyntaxErrorException e) {
-                    logger.error "Error in ${tableName} (SQLSyntaxErrorException: ${false})"
+                    logger.error "Error in ${tableName}: ${e}"
                 }
-
             }
             // sheet AllTables
             logger.info("create new sheet - AllTables")
@@ -311,7 +305,7 @@ FROM ( SELECT ${pks.collect { "tt2.${it}" }.join(", ")}
                                     cellStyle = cellStyles.tBodyAlert
                                 } else if (idx == 3 && targetCount != orgCount) {
                                     cellStyle = cellStyles.tBodyAlert
-                                } else if (val instanceof Boolean && val == false) {
+                                } else if (val instanceof Boolean && !val) {
                                     cellStyle = cellStyles.tBodyAlert
                                 } else if (idx == 8) {
                                     cellStyle = cellStyles.wrapText
@@ -319,11 +313,9 @@ FROM ( SELECT ${pks.collect { "tt2.${it}" }.join(", ")}
                                 if (val != "") {
                                     setCellValue(val)
                                 }
-                                if (idx == 1 && createSheetByTableName[tableName]) {
-                                    cellStyle = memCellStyle(['left', 'top', 'right', 'bottom'], null, memFont("ＭＳ ゴシック", false, true, HSSFColor.BLUE), null, false)
+                                if (idx == 1 && linkTableNames[tableName]) {
+                                    cellStyle = cellStyles.tBodyLink
                                     def ch = getCreationHelper()
-                                    //HSSFHyperlink link = ch.createHyperlink(HSSFHyperlink.LINK_DOCUMENT)
-                                    //link.setAddress((createSheetByTableName[tableName] + '!A1') as String)
                                     HSSFHyperlink link = ch.createHyperlink(HSSFHyperlink.LINK_FILE)
                                     link.setAddress("DatabaseDiff_${target}-${org}_${dateString}_${tableName}.xls" as String)
                                     setHyperlink(link)
@@ -334,7 +326,6 @@ FROM ( SELECT ${pks.collect { "tt2.${it}" }.join(", ")}
                 }
                 createFreezePane(1, 1);
             }
-
             // sheet TableStatus
             logger.info("create new sheet - TableStatus")
             createSheet("TableStatus").with { sheet ->
@@ -389,7 +380,6 @@ FROM ( SELECT ${pks.collect { "tt2.${it}" }.join(", ")}
                 }
                 createFreezePane(1, 1)
             }
-
             setSheetOrder("AllTables", 0)
             new File("xlsout").mkdirs()
             def fileName = "xlsout/DatabaseDiff_${target}-${org}_${dateString}.xls"
@@ -429,7 +419,6 @@ FROM ( SELECT ${pks.collect { "tt2.${it}" }.join(", ")}
                 keys << row["COLUMN_NAME"]
             }
         }
-
         if (keys.size() > 0) {
             return keys
         } else {
