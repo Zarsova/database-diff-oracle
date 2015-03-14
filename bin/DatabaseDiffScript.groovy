@@ -193,6 +193,8 @@ FROM ( SELECT ${pks.collect { "tt2.${it}" }.join(", ")}
                                             }
                                         }
                                         rowIdx++
+                                        createFreezePane(0, 1, 0, 1);
+                                        createSheetByTableName[tableName] = sheet.sheetName
                                         headerOut = true
                                         if (resultSet.getInt(RECORD_COUNT) > limit) {
                                             logger.info("table: ${tableName}, recored count: ${resultSet.getInt(RECORD_COUNT)} - enable diff mode")
@@ -249,12 +251,10 @@ FROM ( SELECT ${pks.collect { "tt2.${it}" }.join(", ")}
                                     rsCount++
                                     if ((rsCount) % 10000 == 0) logger.info("create xls: ${tableName}, row: ${rsCount}, output: ${rowIdx}${(allRowMode ? "" : ", diff mode")}")
                                 }
-                                createFreezePane(0, 1, 0, 1);
-                                createSheetByTableName[tableName] = sheet.sheetName
                             }
-                        } catch (IllegalArgumentException iaex) {
-                            logger.error "Error in ${tableName} (IllegalArgumentException)"
-                            iaex.printStackTrace()
+                        } catch (IllegalArgumentException e) {
+                            logger.error "Error in ${tableName} (IllegalArgumentException: ${e})"
+                            e.printStackTrace()
                         }
 
                         if (rowIdx > 0) {
@@ -267,8 +267,8 @@ FROM ( SELECT ${pks.collect { "tt2.${it}" }.join(", ")}
                             book.removeSheetAt(0)
                         }
                     }
-                } catch (SQLSyntaxErrorException iaex) {
-                    logger.error "Error in ${tableName} (SQLSyntaxErrorException)"
+                } catch (SQLSyntaxErrorException e) {
+                    logger.error "Error in ${tableName} (SQLSyntaxErrorException: ${false})"
                 }
 
             }
