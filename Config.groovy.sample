@@ -22,13 +22,22 @@ exclude {
     // List<String> 形式で指定する
     columns = [
             //'カラム名'
-            'COMM',
-            'COMM2',
+            'COLUMN1',
+            'COLUMN2',
     ]
     // Map<String, List<String> 形式で指定する
     table_columns = [
             //テーブル名: ['カラム名','カラム名'...]
-            DEPT1: ['DNAME', 'DNAME2'],
-            DEPT2: ['DNAME'],
+            DEPT1: ['COLUMN1', 'COLUMN2'],
+            DEPT2: ['COLUMN'],
+    ]
+}
+
+alter_attr {
+    // Map<String, List<String> 形式で指定する
+    table_pks = [
+            //テーブル名: ['カラム名','カラム名'...]
+            DEPT1 : ['PKCOLUMN1', 'PKCOLUMN2'],
+            DEPT2 : ['PKCOLUMN'],
     ]
 }
