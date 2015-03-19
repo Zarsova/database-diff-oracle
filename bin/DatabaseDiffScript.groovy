@@ -1,9 +1,6 @@
 import groovy.sql.Sql
 import groovy.util.logging.Slf4j
-import org.apache.poi.hssf.usermodel.HSSFCellStyle
-import org.apache.poi.hssf.usermodel.HSSFFont
-import org.apache.poi.hssf.usermodel.HSSFHyperlink
-import org.apache.poi.hssf.usermodel.HSSFWorkbook
+import org.apache.poi.hssf.usermodel.*
 import org.apache.poi.hssf.util.HSSFColor
 import org.apache.poi.ss.usermodel.CellStyle
 
@@ -20,59 +17,58 @@ import java.sql.SQLSyntaxErrorException
 class DatabaseDiff {
     def PREFIX = "Z_"
     def RECORD_COUNT = "ZZ_RECORD_COUNT"
+    def XLS_SUFFIX = new Date().format('yyyyMMdd-HHmmss')
+    def XLS_PREFIX = 'DbDiff_'
+    def XLS_OUTPUT_DIR = 'xlsout'
     def limit
     def pkColumn
     def user
     def pass
     def config
-    def hasDiffData = []
+    def tableWithDiffAry = []
     def excludeColumn = []
     def excludeTableColumn = [:]
     def logger = log
     Sql db = null
 
     def run(String target, String org) {
-        logger.info "init args - user: ${user}, pass: ${pass}, limit: ${limit}, pkColumn ${pkColumn}"
+        logger.info "Init args - target schema: ${target}, org schema: ${org}, user: ${user}, pass: ${pass}, limit: ${limit}, pk column: ${pkColumn}"
         if (config.database.url.size() == 0) {
             throw new RuntimeException("Illegal config file. must need database.url\n")
         }
         if (config.exclude.columns.size() > 0) {
-            excludeColumn = config.exclude.columns
-            excludeColumn.each { logger.info("find exclude column: ${it}") }
+            excludeColumn = config.exclude.columns.collect { it.toUpperCase() }
+            logger.info("Find exclude column: ${excludeColumn.join(', ')}")
         }
         if (config.exclude.table_columns.size() > 0) {
-            excludeTableColumn = config.exclude.table_columns
+            config.exclude.table_columns.each {
+                excludeTableColumn[it.key.toUpperCase()] = it.value.collect { it.toUpperCase() }
+            }
             excludeTableColumn.each {
-                it.value.each { column ->
-                    logger.info("find exclude table and column: ${it.key}.${column}")
-                }
+                logger.info("Find exclude table and column: ${it.value.collect { column -> "${it.key}.${column}" }.join(', ')}")
             }
         }
-        logger.info "init done - target schema: ${target}, org schema: ${org}"
-        logger.info("connect database - url: ${config.database.url}, user: ${user}, pass: ${pass}, driver: ${config.database.driver}")
-        def dateString = new Date().format('yyyyMMdd-HHmmss')
+        logger.info "Init done"
+        logger.info("Connect database - url: ${config.database.url}, user: ${user}, pass: ${pass}, driver: ${config.database.driver}")
         db = Sql.newInstance(config.database.url, user, pass, config.database.driver)
-        List<String> tTables = rows(db, "SELECT TABLE_NAME FROM dba_tables WHERE owner = '${target}'" as String).collect {
+        def tTableAry = rows(db, "SELECT TABLE_NAME FROM dba_tables WHERE owner = '${target}'" as String).collect {
             it.values()
         }.flatten()
-        List<String> oTables = rows(db, "SELECT TABLE_NAME FROM dba_tables WHERE owner = '${org}'" as String).collect {
+        def oTableAry = rows(db, "SELECT TABLE_NAME FROM dba_tables WHERE owner = '${org}'" as String).collect {
             it.values()
         }.flatten()
-        [tTables, oTables].each {
+        [tTableAry, oTableAry].each {
             if (it.size() == 0) {
-                throw new RuntimeException("can't find tables in schema: ${tTables.size() == 0 ? target : org}\n")
+                throw new RuntimeException("Can't find tables in schema: ${tTableAry.size() == 0 ? target : org}\n")
             }
         }
-        def allTables = (tTables + oTables) as Set
-        allTables = allTables.sort { it }
-        def isMemExclude = { table, column ->
-            isExclude(table, column)
-        }.memoize()
+        def allTableAry = (tTableAry + oTableAry) as Set
+        allTableAry = allTableAry.sort { it }
         // エクセルへの出力
-        new HSSFWorkbook().with { book ->
-            def memFont = { name = "ＭＳ ゴシック", isBold = false, isUnderline = false, color = null ->
+        new HSSFWorkbook().with { HSSFWorkbook book ->
+            def memFont = { fontName = "ＭＳ ゴシック", isBold = false, isUnderline = false, color = null ->
                 def font = book.createFont()
-                font.setFontName(name)
+                font.setFontName(fontName)
                 font.boldweight = (isBold) ? HSSFFont.BOLDWEIGHT_BOLD : HSSFFont.BOLDWEIGHT_NORMAL
                 font.underline = (isUnderline) ? HSSFFont.U_SINGLE : HSSFFont.U_NONE
                 if (color) font.setColor(color.index)
@@ -97,7 +93,7 @@ class DatabaseDiff {
                 if (format) style.setDataFormat(book.createDataFormat().getFormat(format))
                 style
             }.memoize()
-            def cellStyles = [
+            def cellStyleMap = [
                     tHeader     : memCellStyle(['left', 'top', 'right', 'bottom'], null, memFont("ＭＳ ゴシック", true), HSSFColor.LIGHT_GREEN, true),
                     wrapText    : memCellStyle(['left', 'top', 'right', 'bottom'], null, null, null, true),
                     tHeaderLink : memCellStyle(['left', 'top', 'right', 'bottom'], null, memFont("ＭＳ ゴシック", false, true, HSSFColor.BLUE), HSSFColor.LIGHT_GREEN, true),
@@ -112,140 +108,113 @@ class DatabaseDiff {
             ]
 
             def linkTableNames = [:]
-            allTables.eachWithIndex { String tableName, int tableIdx ->
+            allTableAry.eachWithIndex { String tableName, int tableIdx ->
+                // sheet tableName
+                logger.info("Create new xls file - ${tableName}")
                 try {
-                    def allRowMode = true
-                    def usedSubStr = []
-                    def subStr = { str ->
-                        def rtn = str.length() > (30 - PREFIX.length() - 2) ?
-                                str.substring(0, (30 - PREFIX.length() - 2)) :
-                                str
-                        usedSubStr += rtn
-                        (str == rtn ? rtn : rtn + "_${usedSubStr.count(rtn)}")
-                    }.memoize()
-                    def pks = primaryKeys(db, tableName, target)
-                    def tCols = columns(db, tableName, target)
-                    def oCols = columns(db, tableName, org)
-                    logger.info "target table: ${tableName} - pks: ${pks}, cols: ${tCols}, orgCols: ${oCols}"
-                    def query = """SELECT COUNT(*) over() AS ${RECORD_COUNT},
-${tCols.collect { "t1.${it} AS ${subStr(it)}" }.join(", ")},
-${oCols.collect { "t2.${it} AS Z_${subStr(it)}" }.join(", ")}
-FROM ( SELECT ${pks.collect { "tt2.${it}" }.join(", ")}
-    FROM ${org}.${tableName} tt2
-      LEFT JOIN ${target}.${tableName} tt1
-        ON ${pks.collect { "tt1.${it} = tt2.${it}" }.join(" AND ")} UNION
-    SELECT ${pks.collect { "tt1.${it}" }.join(", ")}
-    FROM ${target}.${tableName} tt1
-      LEFT JOIN ${org}.${tableName} tt2
-        ON ${pks.collect { "tt1.${it} = tt2.${it}" }.join(" AND ")}
-    ORDER BY ${pks.collect { "${it}" }.join(", ")} ) p1
-  LEFT JOIN ${target}.${tableName} t1
-    ON ${pks.collect { "p1.${it} = t1.${it}" }.join(" AND ")}
-  LEFT JOIN ${org}.${tableName} t2
-    ON ${pks.collect { "p1.${it} = t2.${it}" }.join(" AND ")}""" as String //if use limit: WHERE rownum <= $limit
-                    // sheet tableName
-                    logger.info("create new xls file - ${tableName}")
-                    logger.debug "query - " + query.replace("\n", " ").replace("\r", " ").replaceAll(" +", " ")
-                    db.query(query) { ResultSet resultSet ->
+                    def replaceCols = [:]
+                    db.query(createUnionQuery(db, tableName, target, org, replaceCols)) { ResultSet resultSet ->
+                        def memIsExclude = { String column -> isExclude(tableName, column) }.memoize()
+                        def allRowMode = true
+                        int cursorIdx = 0
                         int rowIdx = 0
-                        int rsCount = 0
-                        boolean headerOut = false
+                        boolean headerOutDone = false
                         try {
-                            createSheet(tableName).with { sheet ->
-                                def columnNames = []
-                                def tColumns = []
-                                def oColumns = []
+                            book.createSheet(tableName).with { HSSFSheet sheet ->
+                                def columnPropMap = [:]
+                                def columnNameAry = []
+                                def tColIdxAry = []
+                                def oColIdxAry = []
                                 ResultSetMetaData rowResultMeta = resultSet.getMetaData()
                                 for (int i = 1; i < rowResultMeta.columnCount; i++) {
-                                    def columnName = rowResultMeta.getColumnName(i + 1)
-                                    columnNames.add(columnName)
-                                    if (columnName.startsWith(PREFIX)) {
-                                        if (!isMemExclude(tableName, columnName.substring(PREFIX.length()))) {
-                                            oColumns.add(i + 1)
-                                        }
-                                    } else {
-                                        if (!isMemExclude(tableName, columnName)) {
-                                            tColumns.add(i + 1)
-                                        }
-                                    }
+                                    columnNameAry.add(rowResultMeta.getColumnName(i + 1))
+                                }
+                                columnNameAry.eachWithIndex { String columnName, int idx ->
+                                    // create columnPropMap
+                                    def _isTarget = !columnName.startsWith(PREFIX)
+                                    def _isOrg = columnName.startsWith(PREFIX)
+                                    def _isExclude = memIsExclude(replaceCols[columnName])
+                                    def _columnIndex = idx + 2
+                                    def _otherColumnIndex = _isTarget ?
+                                            columnNameAry.indexOf(PREFIX + columnName) :
+                                            columnNameAry.indexOf(columnName.substring(PREFIX.length()))
+                                    _otherColumnIndex = (_otherColumnIndex == -1) ? null : _otherColumnIndex + 2
+                                    columnPropMap[columnName] = [isTarget        : _isTarget,
+                                                                 isOrg           : _isOrg,
+                                                                 isExclude       : _isExclude,
+                                                                 columnIndex     : _columnIndex,
+                                                                 otherColumnIndex: _otherColumnIndex,]
+                                    // create tColIndexes and oColIndexes
+                                    if (!_isExclude && _isOrg)
+                                        oColIdxAry.add(idx + 2)
+                                    if (!_isExclude && _isTarget)
+                                        tColIdxAry.add(idx + 2)
                                 }
                                 while (resultSet.next()) {
-                                    if (!headerOut) {
-                                        // sheet tableName, row header
-                                        createRow(rowIdx).with { row ->
-                                            columnNames.eachWithIndex { String key, int columnIdx ->
-                                                createCell(columnIdx).with { cell ->
-                                                    setCellValue(key)
-                                                    if (key.startsWith(PREFIX)) cellStyle = cellStyles.oHeader
-                                                    else cellStyle = cellStyles.tHeader
+                                    if (!headerOutDone) {
+                                        sheet.createRow(0).with { HSSFRow row ->
+                                            columnNameAry.eachWithIndex { String columnName, int columnIdx ->
+                                                def columnProp = columnPropMap[columnName]
+                                                row.createCell(columnIdx).with { HSSFCell cell ->
+                                                    cell.setCellValue(replaceCols[columnName])
+                                                    cell.cellStyle = columnProp['isTarget'] ? cellStyleMap.tHeader : cellStyleMap.oHeader
                                                     // 先頭にハイパーリンクを埋め込む
                                                     if (columnIdx == 0) {
-                                                        cellStyle = cellStyles.tHeaderLink
-                                                        HSSFHyperlink link = getCreationHelper().createHyperlink(HSSFHyperlink.LINK_FILE)
-                                                        link.setAddress("DatabaseDiff_${target}-${org}_${dateString}.xls" as String)
-                                                        setHyperlink(link)
+                                                        cell.cellStyle = cellStyleMap.tHeaderLink
+                                                        HSSFHyperlink link = book.getCreationHelper().createHyperlink(HSSFHyperlink.LINK_FILE)
+                                                        link.setAddress("${XLS_PREFIX}${target}-${org}_${XLS_SUFFIX}.xls" as String)
+                                                        cell.setHyperlink(link)
                                                     }
                                                 }
                                             }
                                         }
                                         rowIdx++
-                                        createFreezePane(0, 1, 0, 1);
+                                        sheet.createFreezePane(0, 1, 0, 1);
                                         linkTableNames[tableName] = sheet.sheetName
-                                        headerOut = true
+                                        // sheet tableName, row header
+                                        headerOutDone = true
                                         if (resultSet.getInt(RECORD_COUNT) > limit) {
                                             logger.info("table: ${tableName}, recored count: ${resultSet.getInt(RECORD_COUNT)} - enable diff mode")
                                             allRowMode = false
                                         }
                                     }
                                     // sheet tableName, row body
-                                    boolean out = false
+                                    boolean isRowWithDiff = false
                                     if (!allRowMode) {
-                                        def tData = tColumns.collect { resultSet.getString(it) }
-                                        def oData = oColumns.collect { resultSet.getString(it) }
-                                        out = (tData != oData)
+                                        def _tAry = tColIdxAry.collect { resultSet.getString(it) }
+                                        def _oAry = oColIdxAry.collect { resultSet.getString(it) }
+                                        isRowWithDiff = (_tAry != _oAry)
                                     }
-                                    if (allRowMode || out) {
-                                        createRow(rowIdx).with { row ->
-                                            columnNames.eachWithIndex { String key, int columnIdx ->
-                                                def val = resultSet.getString(key)
-                                                createCell(columnIdx).with { cell ->
-                                                    if (!key.startsWith(PREFIX)) {
-                                                        cellStyle = cellStyles.tBody
-                                                        if (isMemExclude(tableName, key)) {
-                                                            cellStyle = cellStyles.tBodyExclude
-                                                        } else {
-                                                            try {
-                                                                if (val != resultSet.getString(PREFIX + key)) {
-                                                                    if (!hasDiffData.contains(tableName)) hasDiffData.add(tableName)
-                                                                    cellStyle = cellStyles.tBodyAlert
-                                                                }
-                                                            } catch (SQLException ex) {
-                                                                cellStyle = cellStyles.tBodyAlert
-                                                            }
-                                                        }
+                                    if (allRowMode || isRowWithDiff) {
+                                        sheet.createRow(rowIdx).with { HSSFRow row ->
+                                            columnNameAry.eachWithIndex { String columnName, int columnIdx ->
+                                                def columnProp = columnPropMap[columnName]
+                                                def val = resultSet.getString((int) columnProp['columnIndex'])
+                                                row.createCell(columnIdx).with { HSSFCell cell ->
+                                                    if (columnProp['isExclude']) {
+                                                        cell.cellStyle = columnProp['isTarget'] ? cellStyleMap.tBodyExclude : cellStyleMap.oBodyExclude
                                                     } else {
-                                                        cellStyle = cellStyles.oBody
-                                                        def baseColumnName = key.substring(PREFIX.length())
-                                                        if (isMemExclude(tableName, baseColumnName)) {
-                                                            cellStyle = cellStyles.oBodyExclude
-                                                        } else {
-                                                            try {
-                                                                if (val != resultSet.getString(baseColumnName)) {
-                                                                    cellStyle = cellStyles.oBodyAlert
+                                                        try {
+                                                            if (columnProp['otherColumnIndex'] == null || val != resultSet.getString((int) columnProp['otherColumnIndex'])) {
+                                                                if (!tableWithDiffAry.contains(tableName)) {
+                                                                    tableWithDiffAry.add(tableName)
                                                                 }
-                                                            } catch (SQLException ex) {
-                                                                cellStyle = cellStyles.oBodyAlert
+                                                                cell.cellStyle = columnProp['isTarget'] ? cellStyleMap.tBodyAlert : cellStyleMap.oBodyAlert
+                                                            } else {
+                                                                cell.cellStyle = columnProp['isTarget'] ? cellStyleMap.tBody : cellStyleMap.oBody
                                                             }
+                                                        } catch (SQLException ex) {
+                                                            cell.cellStyle = columnProp['isTarget'] ? cellStyleMap.tBodyAlert : cellStyleMap.oBodyAlert
                                                         }
                                                     }
-                                                    setCellValue("${val}")
+                                                    cell.setCellValue("${val}")
                                                 }
                                             }
                                         }
                                         rowIdx++
                                     }
-                                    rsCount++
-                                    if ((rsCount) % 10000 == 0) logger.info("create xls: ${tableName}, row: ${rsCount}, output: ${rowIdx}${(allRowMode ? "" : ", diff mode")}")
+                                    cursorIdx++
+                                    if ((cursorIdx) % 10000 == 0) logger.info("create xls: ${tableName}, cursor: ${cursorIdx}, output: ${rowIdx}${(allRowMode ? "" : ", diff mode")}")
                                 }
                             }
                         } catch (IllegalArgumentException e) {
@@ -253,9 +222,9 @@ FROM ( SELECT ${pks.collect { "tt2.${it}" }.join(", ")}
                         }
 
                         if (rowIdx > 0) {
-                            new File("xlsout").mkdirs()
-                            def fileName = "xlsout/DatabaseDiff_${target}-${org}_${dateString}_${tableName}.xls"
-                            logger.info("create xls file - ${fileName}")
+                            new File(XLS_OUTPUT_DIR).mkdirs()
+                            def fileName = "${XLS_OUTPUT_DIR}/${XLS_PREFIX}${target}-${org}_${XLS_SUFFIX}_${tableName}.xls"
+                            logger.info("Create xls file - ${fileName}")
                             new File(fileName).withOutputStream { os ->
                                 write(os)
                             }
@@ -267,68 +236,60 @@ FROM ( SELECT ${pks.collect { "tt2.${it}" }.join(", ")}
                 }
             }
             // sheet AllTables
-            logger.info("create new sheet - AllTables")
-            createSheet("AllTables").with { sheet ->
+            logger.info("Create new sheet - AllTables")
+            book.createSheet("AllTables").with { HSSFSheet sheet ->
                 // sheet AllTables, row header
-                createRow(0).with { row ->
+                sheet.createRow(0).with { HSSFRow row ->
                     ["#", "テーブル名", "${target}", "${target}(件数)", "${org}", "${org}(件数)", "件数差異なし", "データ差異なし", "無視するカラム"].eachWithIndex { String key, int idx ->
-                        createCell(idx).with { cell ->
-                            setCellValue(key)
-                            cellStyle = cellStyles.tHeader
+                        row.createCell(idx).with { HSSFCell cell ->
+                            cell.setCellValue(key)
+                            cell.cellStyle = cellStyleMap.tHeader
                         }
                     }
                 }
-                allTables.eachWithIndex { tableName, tableIdx ->
+                allTableAry.eachWithIndex { tableName, tableIdx ->
                     def targetCount = null
                     def orgCount = null
-                    if (tTables.contains(tableName)) {
+                    if (tTableAry.contains(tableName)) {
                         targetCount = firstRow(db, 'SELECT count(*) AS count FROM ' + "${target}." + tableName).count
                     }
-                    if (oTables.contains(tableName)) {
+                    if (oTableAry.contains(tableName)) {
                         orgCount = firstRow(db, 'SELECT count(*) AS count FROM ' + "${org}." + tableName).count
                     }
 
                     // sheet AllTables, row body
-                    createRow(tableIdx + 1).with { row ->
-                        def exclude_msg = {
-                            if (excludeTableColumn.containsKey(tableName)) {
-                                excludeTableColumn[tableName].join(",")
-                            } else {
-                                ""
-                            }
-                        }
-
-                        [tableIdx + 1, tableName, tTables.contains(tableName), targetCount, oTables.contains(tableName), orgCount, targetCount == orgCount, !hasDiffData.contains(tableName), exclude_msg.call()].eachWithIndex { val, int idx ->
-                            createCell(idx).with { cell ->
-                                cellStyle = cellStyles.tBody
-                                if (idx == 2 && tTables.contains(tableName) != oTables.contains(tableName)) {
-                                    cellStyle = cellStyles.tBodyAlert
+                    sheet.createRow(tableIdx + 1).with { HSSFRow row ->
+                        def excludeMsg = excludeTableColumn.containsKey(tableName) ? excludeTableColumn[tableName].join(",") : ""
+                        [tableIdx + 1, tableName, tTableAry.contains(tableName), targetCount, oTableAry.contains(tableName), orgCount, targetCount == orgCount, !tableWithDiffAry.contains(tableName), excludeMsg].eachWithIndex { val, int idx ->
+                            row.createCell(idx).with { HSSFCell cell ->
+                                cell.cellStyle = cellStyleMap.tBody
+                                if (idx == 2 && tTableAry.contains(tableName) != oTableAry.contains(tableName)) {
+                                    cell.cellStyle = cellStyleMap.tBodyAlert
                                 } else if (idx == 3 && targetCount != orgCount) {
-                                    cellStyle = cellStyles.tBodyAlert
+                                    cell.cellStyle = cellStyleMap.tBodyAlert
                                 } else if (val instanceof Boolean && !val) {
-                                    cellStyle = cellStyles.tBodyAlert
+                                    cell.cellStyle = cellStyleMap.tBodyAlert
                                 } else if (idx == 8) {
-                                    cellStyle = cellStyles.wrapText
+                                    cell.cellStyle = cellStyleMap.wrapText
                                 }
                                 if (val != "") {
-                                    setCellValue(val)
+                                    cell.setCellValue(val)
                                 }
                                 if (idx == 1 && linkTableNames[tableName]) {
-                                    cellStyle = cellStyles.tBodyLink
-                                    def ch = getCreationHelper()
-                                    HSSFHyperlink link = ch.createHyperlink(HSSFHyperlink.LINK_FILE)
-                                    link.setAddress("DatabaseDiff_${target}-${org}_${dateString}_${tableName}.xls" as String)
-                                    setHyperlink(link)
+                                    cell.cellStyle = cellStyleMap.tBodyLink
+                                    HSSFHyperlink link = book.getCreationHelper().createHyperlink(HSSFHyperlink.LINK_FILE)
+                                    link.setAddress("${XLS_PREFIX}${target}-${org}_${XLS_SUFFIX}_${tableName}.xls" as String)
+                                    cell.setHyperlink(link)
                                 }
                             }
                         }
                     }
                 }
-                createFreezePane(1, 1);
+                sheet.createFreezePane(1, 1);
             }
             // sheet TableStatus
-            logger.info("create new sheet - TableStatus")
-            createSheet("TableStatus").with { sheet ->
+            logger.info("Create new sheet - TableStatus")
+            createSheet("TableStatus").with { HSSFSheet sheet ->
                 def headerColumns = ['TABLE_NAME', 'OWNER', 'TABLESPACE_NAME', 'STATUS', 'PCT_FREE',
                                      'PCT_USED', 'INITIAL_EXTENT', 'NEXT_EXTENT', 'MIN_EXTENTS', 'MAX_EXTENTS',
                                      'PCT_INCREASE', 'FREELISTS', 'FREELIST_GROUPS', 'LOGGING', 'NUM_ROWS',
@@ -336,61 +297,61 @@ FROM ( SELECT ${pks.collect { "tt2.${it}" }.join(", ")}
                 def dummyMap = [:]
                 headerColumns.each { dummyMap.put(it, '') }
                 // sheet TableStatus, row header
-                createRow(0).with { row ->
-                    createCell(0).with { cell -> cellStyle = cellStyles.tHeader; setCellValue("#") }
-                    headerColumns.eachWithIndex { columnName, int columnIdx ->
-                        createCell(columnIdx + 1).with { cell -> cellStyle = cellStyles.tHeader; setCellValue(columnName) }
+                sheet.createRow(0).with { HSSFRow row ->
+                    row.createCell(0).with { HSSFCell cell -> cell.cellStyle = cellStyleMap.tHeader; cell.setCellValue("#") }
+                    headerColumns.eachWithIndex { String columnName, int columnIdx ->
+                        row.createCell(columnIdx + 1).with { HSSFCell cell -> cell.cellStyle = cellStyleMap.tHeader; cell.setCellValue(columnName) }
                     }
-                    headerColumns.eachWithIndex { columnName, int columnIdx ->
-                        createCell(columnIdx + headerColumns.size() + 1).with { cell -> cellStyle = cellStyles.oHeader; setCellValue('Z' + columnName) }
+                    headerColumns.eachWithIndex { String columnName, int columnIdx ->
+                        row.createCell(columnIdx + headerColumns.size() + 1).with { HSSFCell cell -> cell.cellStyle = cellStyleMap.oHeader; cell.setCellValue(PREFIX + columnName) }
                     }
                 }
                 def tRows = rows(db, "SELECT * FROM dba_tables WHERE owner = '${target}'" as String)
                 def oRows = rows(db, "SELECT * FROM dba_tables WHERE owner = '${org}'" as String)
-                allTables.eachWithIndex { tableName, tableIdx ->
+                allTableAry.eachWithIndex { String tableName, int tableIdx ->
                     // sheet TableStatus, row body
-                    createRow(tableIdx + 1).with { row ->
-                        createCell(0).with { cell ->
-                            cellStyle = cellStyles.tBody
-                            setCellValue(tableIdx + 1)
+                    sheet.createRow(tableIdx + 1).with { HSSFRow row ->
+                        row.createCell(0).with { HSSFCell cell ->
+                            cell.cellStyle = cellStyleMap.tBody
+                            cell.setCellValue(tableIdx + 1)
                         }
                         def tmpTRows = tRows.findAll { it['TABLE_NAME'] == tableName }
                         def tmpORows = oRows.findAll { it['TABLE_NAME'] == tableName }
                         def tRow = (tmpTRows.size() == 1 ? tmpTRows[0] : dummyMap)
                         def oRow = (tmpORows.size() == 1 ? tmpORows[0] : dummyMap)
-                        headerColumns.eachWithIndex { columnName, int idx ->
-                            createCell(idx + 1).with { cell ->
-                                cellStyle = cellStyles.tBody
-                                setCellValue(tRow[columnName])
+                        headerColumns.eachWithIndex { String columnName, int idx ->
+                            row.createCell(idx + 1).with { HSSFCell cell ->
+                                cell.cellStyle = cellStyleMap.tBody
+                                cell.setCellValue(tRow[columnName])
                                 if (tRow[columnName] != oRow[columnName]) {
-                                    cellStyle = cellStyles.tBodyAlert
+                                    cell.cellStyle = cellStyleMap.tBodyAlert
                                 }
                             }
                         }
-                        headerColumns.eachWithIndex { columnName, int idx ->
-                            createCell(idx + headerColumns.size() + 1).with { cell ->
-                                cellStyle = cellStyles.oBody
-                                setCellValue(oRow[columnName])
+                        headerColumns.eachWithIndex { String columnName, int idx ->
+                            row.createCell(idx + headerColumns.size() + 1).with { HSSFCell cell ->
+                                cell.cellStyle = cellStyleMap.oBody
+                                cell.setCellValue(oRow[columnName])
                                 if (tRow[columnName] != oRow[columnName]) {
-                                    cellStyle = cellStyles.oBodyAlert
+                                    cell.cellStyle = cellStyleMap.oBodyAlert
                                 }
                             }
                         }
                     }
                 }
-                createFreezePane(1, 1)
+                sheet.createFreezePane(1, 1)
             }
-            setSheetOrder("AllTables", 0)
-            new File("xlsout").mkdirs()
-            def fileName = "xlsout/DatabaseDiff_${target}-${org}_${dateString}.xls"
-            logger.info("create xls file - ${fileName}")
+            book.setSheetOrder("AllTables", 0)
+            new File(XLS_OUTPUT_DIR).mkdirs()
+            def fileName = "${XLS_OUTPUT_DIR}/${XLS_PREFIX}${target}-${org}_${XLS_SUFFIX}.xls"
+            logger.info("Create xls file - ${fileName}")
             new File(fileName).withOutputStream { os ->
                 write(os)
             }
         }
     }
 
-    def isExclude = { table, column ->
+    public boolean isExclude(String table, String column) {
         if (excludeColumn.contains(column)) {
             if (excludeTableColumn.containsKey(table) && !excludeTableColumn[table].contains(column)) {
                 excludeTableColumn[table] << column
@@ -404,7 +365,7 @@ FROM ( SELECT ${pks.collect { "tt2.${it}" }.join(", ")}
         return false
     }
 
-    def primaryKeys = { Sql sql, table, schema ->
+    public List<String> primaryKeys(Sql sql, String table, String schema) {
         def keys = []
         rows(sql, "SELECT cols.table_name, cols.column_name, cols.position, cons.status, cons.owner\n" +
                 "FROM dba_constraints cons, dba_cons_columns cols\n" +
@@ -439,6 +400,18 @@ FROM ( SELECT ${pks.collect { "tt2.${it}" }.join(", ")}
         }
     }
 
+    public List<String> columns(Sql sql, String table, String schema) {
+        def ret = []
+        def query = "SELECT * FROM ${schema}.${table} WHERE rownum = 1" as String
+        logger.debug "query - " + query.replace("\n", " ").replace("\r", " ").replaceAll(" +", " ")
+        sql.rows(query) { ResultSetMetaData meta ->
+            ret = (1..meta.columnCount).collect {
+                meta.getColumnName(it)
+            }
+        }
+        ret
+    }
+
     def rows = { Sql sql, String query ->
         logger.debug "query - " + query.replace("\n", " ").replace("\r", " ").replaceAll(" +", " ")
         sql.rows(query)
@@ -449,16 +422,46 @@ FROM ( SELECT ${pks.collect { "tt2.${it}" }.join(", ")}
         sql.firstRow(query)
     }
 
-    def columns = { Sql sql, String table, String schema ->
-        def ret = []
-        def query = "SELECT * FROM ${schema}.${table} WHERE rownum = 1" as String
-        logger.debug "query - " + query.replace("\n", " ").replace("\r", " ").replaceAll(" +", " ")
-        sql.rows(query) { ResultSetMetaData meta ->
-            ret = (1..meta.columnCount).collect {
-                meta.getColumnName(it)
+    def createUnionQuery = { Sql sql, String tableName, String target, String org, Map replaceCols = [:] ->
+        def shortNameAry = []
+        def subStr = { inStr ->
+            def outStr
+            def shortName = inStr.length() > (30 - PREFIX.length() - 2) ?
+                    inStr.substring(0, (30 - PREFIX.length() - 2)) :
+                    inStr
+            shortNameAry += shortName
+            if (inStr == shortName) {
+                outStr = shortName
+            } else {
+                outStr = shortName + "_${shortNameAry.count(shortName)}"
             }
-        }
-        ret
+            replaceCols[outStr] = inStr
+            replaceCols[PREFIX.concat(outStr)] = inStr
+            outStr
+        }.memoize()
+        def pks = primaryKeys(sql, tableName, target)
+        def tCols = columns(sql, tableName, target)
+        def oCols = columns(sql, tableName, org)
+        logger.info "target table: ${tableName} - pks: ${pks}, cols: ${tCols}, orgCols: ${oCols}"
+        def query = """SELECT COUNT(*) over() AS ${RECORD_COUNT},
+${tCols.collect { "t1.${it} AS ${subStr(it)}" }.join(", ")},
+${oCols.collect { "t2.${it} AS ${PREFIX}${subStr(it)}" }.join(", ")}
+FROM ( SELECT ${pks.collect { "tt2.${it}" }.join(", ")}
+    FROM ${org}.${tableName} tt2
+      LEFT JOIN ${target}.${tableName} tt1
+        ON ${pks.collect { "tt1.${it} = tt2.${it}" }.join(" AND ")} UNION
+    SELECT ${pks.collect { "tt1.${it}" }.join(", ")}
+    FROM ${target}.${tableName} tt1
+      LEFT JOIN ${org}.${tableName} tt2
+        ON ${pks.collect { "tt1.${it} = tt2.${it}" }.join(" AND ")}
+    ORDER BY ${pks.collect { "${it}" }.join(", ")} ) p1
+  LEFT JOIN ${target}.${tableName} t1
+    ON ${pks.collect { "p1.${it} = t1.${it}" }.join(" AND ")}
+  LEFT JOIN ${org}.${tableName} t2
+    ON ${pks.collect { "p1.${it} = t2.${it}" }.join(" AND ")}""" as String //if use limit: WHERE rownum <= $limit
+        // sheet tableName
+        logger.debug "query - " + query.replace("\n", " ").replace("\r", " ").replaceAll(" +", " ")
+        query
     }
 
     static printErr = System.err.&println
@@ -527,4 +530,6 @@ FROM ( SELECT ${pks.collect { "tt2.${it}" }.join(", ")}
     }
 }
 
+//new groovyx.gprof.Profiler().run {
 DatabaseDiff.main(args, new File(getClass().protectionDomain.codeSource.location.path).parent)
+//}.prettyPrint()
