@@ -505,7 +505,7 @@ WHERE rownum <= $CURSOR_LIMIT""" as String //if use limit
     static printErr = System.err.&println
 
     public static main(args, scriptDir) {
-        def cli = new CliBuilder(usage: "database-diff [options] [targetSchema] [orgSchema]", header: "options (ver: ${DatabaseDiff.VERSION}):")
+        def cli = new CliBuilder(usage: "database-diff [options] [targetSchema] [orgSchema]", header: "options (v${DatabaseDiff.VERSION}):")
         cli.with {
             h(longOpt: 'help', 'print this message')
             c(longOpt: 'config', args: 1, argName: 'config file', "default %SCRIPT_HOME%/Config.groovy")
