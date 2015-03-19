@@ -15,17 +15,20 @@ import java.sql.SQLSyntaxErrorException
  */
 @Slf4j
 class DatabaseDiff {
+    static def VERSION = '1.1.3'
     def PREFIX = "Z_"
     def RECORD_COUNT = "ZZ_RECORD_COUNT"
     def XLS_SUFFIX = new Date().format('yyyyMMdd-HHmmss')
     def XLS_PREFIX = 'DbDiff_'
     def XLS_OUTPUT_DIR = 'xlsout'
+    def CURSOR_LIMIT = 2000000
     def limit
     def pkColumn
     def user
     def pass
     def config
     def tableWithDiffAry = []
+    def attrTablePrimaryKey = [:]
     def includeTable = []
     def excludeColumn = []
     def excludeTableColumn = [:]
@@ -37,13 +40,21 @@ class DatabaseDiff {
         if (config.database.url.size() == 0) {
             throw new RuntimeException("Illegal config file. must need database.url\n")
         }
-        if (config.exclude.columns.size() > 0) {
-            excludeColumn = config.exclude.columns.collect { it.toUpperCase() }
-            logger.info("Find exclude column: ${excludeColumn.join(', ')}")
+        if (config.alter_attr.table_pks.size() > 0) {
+            config.alter_attr.table_pks.each {
+                attrTablePrimaryKey[it.key.toUpperCase()] = it.value.collect { it.toUpperCase() }
+            }
+            attrTablePrimaryKey.each {
+                logger.info("Find attribute. table: ${it.key}, primary keys: ${it.value.collect { it }.join(', ')}")
+            }
         }
         if (config.include.tables.size() > 0) {
             includeTable = config.include.tables.collect { it.toUpperCase() }
             logger.info("Find include table: ${includeTable.join(', ')}")
+        }
+        if (config.exclude.columns.size() > 0) {
+            excludeColumn = config.exclude.columns.collect { it.toUpperCase() }
+            logger.info("Find exclude column: ${excludeColumn.join(', ')}")
         }
         if (config.exclude.table_columns.size() > 0) {
             config.exclude.table_columns.each {
@@ -175,7 +186,7 @@ class DatabaseDiff {
                                         // sheet tableName, row header
                                         headerOutDone = true
                                         if (resultSet.getInt(RECORD_COUNT) > limit) {
-                                            logger.info("table: ${tableName}, recored count: ${resultSet.getInt(RECORD_COUNT)} - enable diff mode")
+                                            logger.info("Enable diff mode. table: ${tableName}, recored count: ${resultSet.getInt(RECORD_COUNT)}")
                                             allRowMode = false
                                         }
                                     }
@@ -215,7 +226,7 @@ class DatabaseDiff {
                                         rowIdx++
                                     }
                                     cursorIdx++
-                                    if ((cursorIdx) % 10000 == 0) logger.info("create xls: ${tableName}, cursor: ${cursorIdx}, output: ${rowIdx}${(allRowMode ? "" : ", diff mode")}")
+                                    if ((cursorIdx) % 10000 == 0) logger.info("Create xls: ${tableName}, cursor: ${cursorIdx}, output: ${rowIdx}${(allRowMode ? "" : ", diff mode")}")
                                 }
                             }
                         } catch (IllegalArgumentException e) {
@@ -241,7 +252,7 @@ class DatabaseDiff {
             book.createSheet("AllTables").with { HSSFSheet sheet ->
                 // sheet AllTables, row header
                 sheet.createRow(0).with { HSSFRow row ->
-                    ["#", "テーブル名", "${target}", "${target}(件数)", "${org}", "${org}(件数)", "件数差異なし", "データ差異なし", "無視するカラム"].eachWithIndex { String key, int idx ->
+                    ["#", "テーブル名", "${target}", "${target}(件数)", "${org}", "${org}(件数)", "件数差異なし", "データ差異なし", "Primary Key", "無視するカラム"].eachWithIndex { String key, int idx ->
                         row.createCell(idx).with { HSSFCell cell ->
                             cell.setCellValue(key)
                             cell.cellStyle = cellStyleMap.tHeader
@@ -261,7 +272,8 @@ class DatabaseDiff {
                     // sheet AllTables, row body
                     sheet.createRow(tableIdx + 1).with { HSSFRow row ->
                         def excludeMsg = excludeTableColumn.containsKey(tableName) ? excludeTableColumn[tableName].join(",") : ""
-                        [tableIdx + 1, tableName, tTableAry.contains(tableName), targetCount, oTableAry.contains(tableName), orgCount, targetCount == orgCount, !tableWithDiffAry.contains(tableName), excludeMsg].eachWithIndex { val, int idx ->
+                        def pkMsg = attrTablePrimaryKey.containsKey(tableName) ? attrTablePrimaryKey[tableName].join(",") : ""
+                        [tableIdx + 1, tableName, tTableAry.contains(tableName), targetCount, oTableAry.contains(tableName), orgCount, targetCount == orgCount, !tableWithDiffAry.contains(tableName), pkMsg, excludeMsg].eachWithIndex { val, int idx ->
                             row.createCell(idx).with { HSSFCell cell ->
                                 cell.cellStyle = cellStyleMap.tBody
                                 if (idx == 2 && tTableAry.contains(tableName) != oTableAry.contains(tableName)) {
@@ -271,6 +283,8 @@ class DatabaseDiff {
                                 } else if (val instanceof Boolean && !val) {
                                     cell.cellStyle = cellStyleMap.tBodyAlert
                                 } else if (idx == 8) {
+                                    cell.cellStyle = cellStyleMap.wrapText
+                                } else if (idx == 9) {
                                     cell.cellStyle = cellStyleMap.wrapText
                                 }
                                 if (val != "") {
@@ -290,13 +304,11 @@ class DatabaseDiff {
             }
             // sheet TableStatus
             logger.info("Create new sheet - TableStatus")
-            createSheet("TableStatus").with { HSSFSheet sheet ->
+            book.createSheet("TableStatus").with { HSSFSheet sheet ->
                 def headerColumns = ['TABLE_NAME', 'OWNER', 'TABLESPACE_NAME', 'STATUS', 'PCT_FREE',
                                      'PCT_USED', 'INITIAL_EXTENT', 'NEXT_EXTENT', 'MIN_EXTENTS', 'MAX_EXTENTS',
                                      'PCT_INCREASE', 'FREELISTS', 'FREELIST_GROUPS', 'LOGGING', 'NUM_ROWS',
                                      'BLOCKS', 'EMPTY_BLOCKS', 'AVG_ROW_LEN', 'LAST_ANALYZED',]
-                def dummyMap = [:]
-                headerColumns.each { dummyMap.put(it, '') }
                 // sheet TableStatus, row header
                 sheet.createRow(0).with { HSSFRow row ->
                     row.createCell(0).with { HSSFCell cell -> cell.cellStyle = cellStyleMap.tHeader; cell.setCellValue("#") }
@@ -316,10 +328,10 @@ class DatabaseDiff {
                             cell.cellStyle = cellStyleMap.tBody
                             cell.setCellValue(tableIdx + 1)
                         }
-                        def tmpTRows = tRows.findAll { it['TABLE_NAME'] == tableName }
-                        def tmpORows = oRows.findAll { it['TABLE_NAME'] == tableName }
-                        def tRow = (tmpTRows.size() == 1 ? tmpTRows[0] : dummyMap)
-                        def oRow = (tmpORows.size() == 1 ? tmpORows[0] : dummyMap)
+                        def _tRows = tRows.findAll { it['TABLE_NAME'] == tableName }
+                        def tRow = (_tRows.size() == 1 ? _tRows[0] : [:])
+                        def _oRows = oRows.findAll { it['TABLE_NAME'] == tableName }
+                        def oRow = (_oRows.size() == 1 ? _oRows[0] : [:])
                         headerColumns.eachWithIndex { String columnName, int idx ->
                             row.createCell(idx + 1).with { HSSFCell cell ->
                                 cell.cellStyle = cellStyleMap.tBody
@@ -354,13 +366,13 @@ class DatabaseDiff {
 
     def isExclude = { String table, String column ->
         if (excludeColumn.contains(column)) {
-            if (excludeTableColumn.containsKey(table) && !excludeTableColumn[table].contains(column)) {
+            if (excludeTableColumn.containsKey(table) && !(column in excludeTableColumn[table])) {
                 excludeTableColumn[table] << column
             } else {
                 excludeTableColumn[table] = [column]
             }
             return true
-        } else if (excludeTableColumn.containsKey(table) && excludeTableColumn[table].contains(column)) {
+        } else if (excludeTableColumn.containsKey(table) && (column in excludeTableColumn[table])) {
             return true
         }
         return false
@@ -369,7 +381,7 @@ class DatabaseDiff {
     def tablesByOwner = { Sql sql, String owner ->
         def rtnAry = rows(sql, "SELECT TABLE_NAME FROM dba_tables WHERE owner = '${owner}'" as String).collect {
             if (includeTable.size() > 0) {
-                includeTable.contains(it.table_name) ? it.table_name : []
+                (it.table_name in includeTable) ? it.table_name : []
             } else {
                 it.table_name
             }
@@ -379,43 +391,54 @@ class DatabaseDiff {
 
     def primaryKeys = { Sql sql, String table, String schema ->
         def keys = []
-        rows(sql, "SELECT cols.table_name, cols.column_name, cols.position, cons.status, cons.owner\n" +
-                "FROM dba_constraints cons, dba_cons_columns cols\n" +
-                "WHERE cols.table_name = cols.table_name\n" +
-                "AND cols.table_name = '${table}'\n" +
-                "AND cons.constraint_type = 'P'\n" +
-                "AND cons.constraint_name = cols.constraint_name\n" +
-                "AND cons.owner = cols.owner\n" +
-                "AND cons.owner = '${schema}'\n" +
-                "ORDER BY cols.table_name, cols.position" as String).each { row ->
-            if (!isExclude(table, row["COLUMN_NAME"])) {
-                keys << row["COLUMN_NAME"]
+        if (attrTablePrimaryKey.containsKey(table) && attrTablePrimaryKey[table].size() > 0) {
+            logger.info("Find primary key(config): ${attrTablePrimaryKey[table]}")
+            def columnNames = columns(sql, table, schema)
+            attrTablePrimaryKey[table].each { columnName ->
+                if (!isExclude(table, columnName) && (columnName in columnNames)) {
+                    keys << columnName
+                }
             }
         }
         if (keys.size() > 0) {
-            return keys
+            logger.info("Find primary key(attr): ${keys}")
         } else {
-            def result = []
+            rows(sql, """SELECT cols.table_name, cols.column_name, cols.position, cons.status, cons.owner
+FROM dba_constraints cons, dba_cons_columns cols
+WHERE cols.table_name = cols.table_name
+  AND cols.table_name = '${table}'
+  AND cons.constraint_type = 'P'
+  AND cons.constraint_name = cols.constraint_name
+  AND cons.owner = cols.owner
+  AND cons.owner = '${schema}'
+ORDER BY cols.table_name, cols.position""" as String).each { row ->
+                if (!isExclude(table, row["COLUMN_NAME"])) {
+                    keys << row["COLUMN_NAME"]
+                }
+            }
+        }
+        if (keys.size() > 0) {
+            logger.info("Find primary key(dba table): ${keys}")
+        } else {
             def count = 0
-            rows(sql, "SELECT * FROM DBA_TAB_COLS cols\n" +
-                    "WHERE Cols.Owner = '${schema}'\n" +
-                    "and Cols.table_name = '${table}'\n" +
-                    "order by Cols.Column_Id" as String).each { row ->
+            columns(sql, table, schema).each { String columnName ->
                 if (count <= pkColumn) {
-                    if (!isExclude(table, row["COLUMN_NAME"])) {
-                        result << row["COLUMN_NAME"]
+                    if (!isExclude(table, columnName)) {
+                        keys << columnName
                         count += 1
                     }
                 }
             }
-            result
+            logger.info("Find primary key(${pkColumn}dummy): ${keys}")
         }
+        attrTablePrimaryKey[table] = keys
+        keys
     }
 
     def columns = { Sql sql, String table, String schema ->
         def ret = []
         def query = "SELECT * FROM ${schema}.${table} WHERE rownum = 1" as String
-        logger.debug "query - " + query.replace("\n", " ").replace("\r", " ").replaceAll(" +", " ")
+        logger.debug "Query: " + query.replace("\n", " ").replace("\r", " ").replaceAll(" +", " ")
         sql.rows(query) { ResultSetMetaData meta ->
             ret = (1..meta.columnCount).collect {
                 meta.getColumnName(it)
@@ -425,12 +448,12 @@ class DatabaseDiff {
     }
 
     def rows = { Sql sql, String query ->
-        logger.debug "query - " + query.replace("\n", " ").replace("\r", " ").replaceAll(" +", " ")
+        logger.debug "Query: " + query.replace("\n", " ").replace("\r", " ").replaceAll(" +", " ")
         sql.rows(query)
     }
 
     def firstRow = { Sql sql, String query ->
-        logger.debug "query - " + query.replace("\n", " ").replace("\r", " ").replaceAll(" +", " ")
+        logger.debug "Query: " + query.replace("\n", " ").replace("\r", " ").replaceAll(" +", " ")
         sql.firstRow(query)
     }
 
@@ -454,7 +477,7 @@ class DatabaseDiff {
         def pks = primaryKeys(sql, tableName, target)
         def tCols = columns(sql, tableName, target)
         def oCols = columns(sql, tableName, org)
-        logger.info "target table: ${tableName} - pks: ${pks}, cols: ${tCols}, orgCols: ${oCols}"
+        logger.info "Target table: ${tableName} - pks: ${pks}, cols: ${tCols}, orgCols: ${oCols}"
         def query = """SELECT COUNT(*) over() AS ${RECORD_COUNT},
 ${tCols.collect { "t1.${it} AS ${subStr(it)}" }.join(", ")},
 ${oCols.collect { "t2.${it} AS ${PREFIX}${subStr(it)}" }.join(", ")}
@@ -470,16 +493,17 @@ FROM ( SELECT ${pks.collect { "tt2.${it}" }.join(", ")}
   LEFT JOIN ${target}.${tableName} t1
     ON ${pks.collect { "p1.${it} = t1.${it}" }.join(" AND ")}
   LEFT JOIN ${org}.${tableName} t2
-    ON ${pks.collect { "p1.${it} = t2.${it}" }.join(" AND ")}""" as String //if use limit: WHERE rownum <= $limit
+    ON ${pks.collect { "p1.${it} = t2.${it}" }.join(" AND ")}
+WHERE rownum <= $CURSOR_LIMIT""" as String //if use limit
         // sheet tableName
-        logger.debug "query - " + query.replace("\n", " ").replace("\r", " ").replaceAll(" +", " ")
+        logger.debug "Query: " + query.replace("\n", " ").replace("\r", " ").replaceAll(" +", " ")
         query
     }
 
     static printErr = System.err.&println
 
     public static main(args, scriptDir) {
-        def cli = new CliBuilder(usage: 'database-diff [options] [targetSchema] [orgSchema]', header: 'Options:')
+        def cli = new CliBuilder(usage: "database-diff [options] [targetSchema] [orgSchema]", header: "options (ver: ${DatabaseDiff.VERSION}):")
         cli.with {
             h(longOpt: 'help', 'print this message')
             c(longOpt: 'config', args: 1, argName: 'config file', "default %SCRIPT_HOME%/Config.groovy")
