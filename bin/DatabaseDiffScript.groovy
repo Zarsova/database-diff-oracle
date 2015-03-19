@@ -227,6 +227,8 @@ class DatabaseDiff {
                                     }
                                     cursorIdx++
                                     if ((cursorIdx) % 10000 == 0) logger.info("Create xls: ${tableName}, cursor: ${cursorIdx}, output: ${rowIdx}${(allRowMode ? "" : ", diff mode")}")
+                                    if (rowIdx > limit) break
+
                                 }
                             }
                         } catch (IllegalArgumentException e) {
