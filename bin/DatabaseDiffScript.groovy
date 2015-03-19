@@ -26,6 +26,7 @@ class DatabaseDiff {
     def pass
     def config
     def tableWithDiffAry = []
+    def includeTable = []
     def excludeColumn = []
     def excludeTableColumn = [:]
     def logger = log
@@ -40,6 +41,10 @@ class DatabaseDiff {
             excludeColumn = config.exclude.columns.collect { it.toUpperCase() }
             logger.info("Find exclude column: ${excludeColumn.join(', ')}")
         }
+        if (config.include.tables.size() > 0) {
+            includeTable = config.include.tables.collect { it.toUpperCase() }
+            logger.info("Find include table: ${includeTable.join(', ')}")
+        }
         if (config.exclude.table_columns.size() > 0) {
             config.exclude.table_columns.each {
                 excludeTableColumn[it.key.toUpperCase()] = it.value.collect { it.toUpperCase() }
@@ -51,12 +56,8 @@ class DatabaseDiff {
         logger.info "Init done"
         logger.info("Connect database - url: ${config.database.url}, user: ${user}, pass: ${pass}, driver: ${config.database.driver}")
         db = Sql.newInstance(config.database.url, user, pass, config.database.driver)
-        def tTableAry = rows(db, "SELECT TABLE_NAME FROM dba_tables WHERE owner = '${target}'" as String).collect {
-            it.values()
-        }.flatten()
-        def oTableAry = rows(db, "SELECT TABLE_NAME FROM dba_tables WHERE owner = '${org}'" as String).collect {
-            it.values()
-        }.flatten()
+        def tTableAry = tablesByOwner(db, target)
+        def oTableAry = tablesByOwner(db, org)
         [tTableAry, oTableAry].each {
             if (it.size() == 0) {
                 throw new RuntimeException("Can't find tables in schema: ${tTableAry.size() == 0 ? target : org}\n")
@@ -351,7 +352,7 @@ class DatabaseDiff {
         }
     }
 
-    public boolean isExclude(String table, String column) {
+    def isExclude = { String table, String column ->
         if (excludeColumn.contains(column)) {
             if (excludeTableColumn.containsKey(table) && !excludeTableColumn[table].contains(column)) {
                 excludeTableColumn[table] << column
@@ -365,7 +366,18 @@ class DatabaseDiff {
         return false
     }
 
-    public List<String> primaryKeys(Sql sql, String table, String schema) {
+    def tablesByOwner = { Sql sql, String owner ->
+        def rtnAry = rows(sql, "SELECT TABLE_NAME FROM dba_tables WHERE owner = '${owner}'" as String).collect {
+            if (includeTable.size() > 0) {
+                includeTable.contains(it.table_name) ? it.table_name : []
+            } else {
+                it.table_name
+            }
+        }.flatten()
+        rtnAry
+    }
+
+    def primaryKeys = { Sql sql, String table, String schema ->
         def keys = []
         rows(sql, "SELECT cols.table_name, cols.column_name, cols.position, cons.status, cons.owner\n" +
                 "FROM dba_constraints cons, dba_cons_columns cols\n" +
@@ -400,7 +412,7 @@ class DatabaseDiff {
         }
     }
 
-    public List<String> columns(Sql sql, String table, String schema) {
+    def columns = { Sql sql, String table, String schema ->
         def ret = []
         def query = "SELECT * FROM ${schema}.${table} WHERE rownum = 1" as String
         logger.debug "query - " + query.replace("\n", " ").replace("\r", " ").replaceAll(" +", " ")
