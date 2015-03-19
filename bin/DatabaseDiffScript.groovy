@@ -146,18 +146,18 @@ class DatabaseDiff {
                                                                  otherColumnIndex: _otherColumnIndex,]
                                     // create tColIndexes and oColIndexes
                                     if (!_isExclude && _isOrg)
-                                        oColIdxAry.add(idx + 2)
+                                        oColIdxAry.add(_columnIndex)
                                     if (!_isExclude && _isTarget)
-                                        tColIdxAry.add(idx + 2)
+                                        tColIdxAry.add(_columnIndex)
                                 }
                                 while (resultSet.next()) {
                                     if (!headerOutDone) {
-                                        sheet.createRow(0).with { HSSFRow row ->
+                                        sheet.createRow(rowIdx).with { HSSFRow row ->
                                             columnNameAry.eachWithIndex { String columnName, int columnIdx ->
-                                                def columnProp = columnPropMap[columnName]
+                                                Map prop = columnPropMap[columnName]
                                                 row.createCell(columnIdx).with { HSSFCell cell ->
                                                     cell.setCellValue(replaceCols[columnName])
-                                                    cell.cellStyle = columnProp['isTarget'] ? cellStyleMap.tHeader : cellStyleMap.oHeader
+                                                    cell.cellStyle = prop.isTarget ? cellStyleMap.tHeader : cellStyleMap.oHeader
                                                     // 先頭にハイパーリンクを埋め込む
                                                     if (columnIdx == 0) {
                                                         cell.cellStyle = cellStyleMap.tHeaderLink
@@ -188,23 +188,23 @@ class DatabaseDiff {
                                     if (allRowMode || isRowWithDiff) {
                                         sheet.createRow(rowIdx).with { HSSFRow row ->
                                             columnNameAry.eachWithIndex { String columnName, int columnIdx ->
-                                                def columnProp = columnPropMap[columnName]
-                                                def val = resultSet.getString((int) columnProp['columnIndex'])
+                                                Map prop = columnPropMap[columnName]
+                                                def val = resultSet.getString((int) prop.columnIndex)
                                                 row.createCell(columnIdx).with { HSSFCell cell ->
-                                                    if (columnProp['isExclude']) {
-                                                        cell.cellStyle = columnProp['isTarget'] ? cellStyleMap.tBodyExclude : cellStyleMap.oBodyExclude
+                                                    if (prop.isExclude) {
+                                                        cell.cellStyle = prop.isTarget ? cellStyleMap.tBodyExclude : cellStyleMap.oBodyExclude
                                                     } else {
                                                         try {
-                                                            if (columnProp['otherColumnIndex'] == null || val != resultSet.getString((int) columnProp['otherColumnIndex'])) {
+                                                            if (prop.otherColumnIndex == null || val != resultSet.getString((int) prop.otherColumnIndex)) {
                                                                 if (!tableWithDiffAry.contains(tableName)) {
                                                                     tableWithDiffAry.add(tableName)
                                                                 }
-                                                                cell.cellStyle = columnProp['isTarget'] ? cellStyleMap.tBodyAlert : cellStyleMap.oBodyAlert
+                                                                cell.cellStyle = prop.isTarget ? cellStyleMap.tBodyAlert : cellStyleMap.oBodyAlert
                                                             } else {
-                                                                cell.cellStyle = columnProp['isTarget'] ? cellStyleMap.tBody : cellStyleMap.oBody
+                                                                cell.cellStyle = prop.isTarget ? cellStyleMap.tBody : cellStyleMap.oBody
                                                             }
                                                         } catch (SQLException ex) {
-                                                            cell.cellStyle = columnProp['isTarget'] ? cellStyleMap.tBodyAlert : cellStyleMap.oBodyAlert
+                                                            cell.cellStyle = prop.isTarget ? cellStyleMap.tBodyAlert : cellStyleMap.oBodyAlert
                                                         }
                                                     }
                                                     cell.setCellValue("${val}")
