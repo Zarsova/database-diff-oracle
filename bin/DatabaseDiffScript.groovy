@@ -15,7 +15,7 @@ import java.sql.SQLSyntaxErrorException
  */
 @Slf4j
 class DatabaseDiff {
-    static def VERSION = '1.1.3'
+    static def VERSION = '1.1.4'
     def PREFIX = "Z_"
     def RECORD_COUNT = "ZZ_RECORD_COUNT"
     def XLS_SUFFIX = new Date().format('yyyyMMdd-HHmmss')
@@ -27,6 +27,7 @@ class DatabaseDiff {
     def user
     def pass
     def config
+    def defaultAllRowMode
     def tableWithDiffAry = []
     def attrTablePrimaryKey = [:]
     def includeTable = []
@@ -36,7 +37,7 @@ class DatabaseDiff {
     Sql db = null
 
     def run(String target, String org) {
-        logger.info "Init args - target schema: ${target}, org schema: ${org}, user: ${user}, pass: ${pass}, limit: ${limit}, pk column: ${pkColumn}"
+        logger.info "Init args - target schema: ${target}, org schema: ${org}, user: ${user}, pass: ${pass}, limit: ${limit}, pkcolumn: ${pkColumn}, allrow: ${defaultAllRowMode}"
         if (config.database.url.size() == 0) {
             throw new RuntimeException("Illegal config file. must need database.url\n")
         }
@@ -122,12 +123,12 @@ class DatabaseDiff {
             def linkTableNames = [:]
             allTableAry.eachWithIndex { String tableName, int tableIdx ->
                 // sheet tableName
-                logger.info("Create new xls file - ${tableName}")
+                logger.info("Create new sheet- ${tableName}")
                 try {
                     def replaceCols = [:]
                     db.query(createUnionQuery(db, tableName, target, org, replaceCols)) { ResultSet resultSet ->
                         def memIsExclude = { String column -> isExclude(tableName, column) }.memoize()
-                        def allRowMode = true
+                        def allRowMode = defaultAllRowMode
                         int cursorIdx = 0
                         int rowIdx = 0
                         boolean headerOutDone = false
@@ -165,23 +166,27 @@ class DatabaseDiff {
                                 while (resultSet.next()) {
                                     if (!headerOutDone) {
                                         sheet.createRow(rowIdx).with { HSSFRow row ->
+                                            sheet.setColumnWidth(0, 4 * 365)
+                                            // 先頭に連番(#)とハイパーリンクを埋め込む
+                                            row.createCell(0).with { HSSFCell cell ->
+                                                cell.setCellValue("#")
+                                                cell.cellStyle = cellStyleMap.tHeaderLink
+//                                                HSSFHyperlink link = book.getCreationHelper().createHyperlink(HSSFHyperlink.LINK_FILE)
+//                                                link.setAddress("${XLS_PREFIX}${target}-${org}_${XLS_SUFFIX}.xls" as String)
+                                                HSSFHyperlink link = book.getCreationHelper().createHyperlink(HSSFHyperlink.LINK_DOCUMENT)
+                                                link.setAddress("AllTables!B${tableIdx + 2}" as String)
+                                                cell.setHyperlink(link)
+                                            }
                                             columnNameAry.eachWithIndex { String columnName, int columnIdx ->
                                                 Map prop = columnPropMap[columnName]
-                                                row.createCell(columnIdx).with { HSSFCell cell ->
+                                                row.createCell(columnIdx + 1).with { HSSFCell cell ->
                                                     cell.setCellValue(replaceCols[columnName])
                                                     cell.cellStyle = prop.isTarget ? cellStyleMap.tHeader : cellStyleMap.oHeader
-                                                    // 先頭にハイパーリンクを埋め込む
-                                                    if (columnIdx == 0) {
-                                                        cell.cellStyle = cellStyleMap.tHeaderLink
-                                                        HSSFHyperlink link = book.getCreationHelper().createHyperlink(HSSFHyperlink.LINK_FILE)
-                                                        link.setAddress("${XLS_PREFIX}${target}-${org}_${XLS_SUFFIX}.xls" as String)
-                                                        cell.setHyperlink(link)
-                                                    }
                                                 }
                                             }
                                         }
                                         rowIdx++
-                                        sheet.createFreezePane(0, 1, 0, 1);
+                                        sheet.createFreezePane(1, 1);
                                         linkTableNames[tableName] = sheet.sheetName
                                         // sheet tableName, row header
                                         headerOutDone = true
@@ -199,10 +204,11 @@ class DatabaseDiff {
                                     }
                                     if (allRowMode || isRowWithDiff) {
                                         sheet.createRow(rowIdx).with { HSSFRow row ->
+                                            row.createCell(0).with { HSSFCell cell -> cell.setCellValue(rowIdx); cell.cellStyle = cellStyleMap.tBody }
                                             columnNameAry.eachWithIndex { String columnName, int columnIdx ->
                                                 Map prop = columnPropMap[columnName]
                                                 def val = resultSet.getString((int) prop.columnIndex)
-                                                row.createCell(columnIdx).with { HSSFCell cell ->
+                                                row.createCell(columnIdx + 1).with { HSSFCell cell ->
                                                     if (prop.isExclude) {
                                                         cell.cellStyle = prop.isTarget ? cellStyleMap.tBodyExclude : cellStyleMap.oBodyExclude
                                                     } else {
@@ -234,16 +240,15 @@ class DatabaseDiff {
                         } catch (IllegalArgumentException e) {
                             logger.error "Error in ${tableName}: ${e}"
                         }
-
-                        if (rowIdx > 0) {
-                            new File(XLS_OUTPUT_DIR).mkdirs()
-                            def fileName = "${XLS_OUTPUT_DIR}/${XLS_PREFIX}${target}-${org}_${XLS_SUFFIX}_${tableName}.xls"
-                            logger.info("Create xls file - ${fileName}")
-                            new File(fileName).withOutputStream { os ->
-                                write(os)
-                            }
-                            book.removeSheetAt(0)
-                        }
+//                        if (rowIdx > 0) {
+//                            new File(XLS_OUTPUT_DIR).mkdirs()
+//                            def fileName = "${XLS_OUTPUT_DIR}/${XLS_PREFIX}${target}-${org}_${XLS_SUFFIX}_${tableName}.xls"
+//                            logger.info("Create xls file - ${fileName}")
+//                            new File(fileName).withOutputStream { os ->
+//                                write(os)
+//                            }
+//                            book.removeSheetAt(0)
+//                        }
                     }
                 } catch (SQLSyntaxErrorException e) {
                     logger.error "Error in ${tableName}: ${e}"
@@ -254,13 +259,14 @@ class DatabaseDiff {
             book.createSheet("AllTables").with { HSSFSheet sheet ->
                 // sheet AllTables, row header
                 sheet.createRow(0).with { HSSFRow row ->
-                    ["#", "テーブル名", "${target}", "${target}(件数)", "${org}", "${org}(件数)", "件数差異なし", "データ差異なし", "Primary Key", "無視するカラム"].eachWithIndex { String key, int idx ->
+                    ["#", "テーブル名", "${target}", "${target} 件数", "${org}", "${org} 件数", "件数チェック", "データチェック", "プライマリキー", "チェック対象外"].eachWithIndex { String key, int idx ->
                         row.createCell(idx).with { HSSFCell cell ->
                             cell.setCellValue(key)
                             cell.cellStyle = cellStyleMap.tHeader
                         }
                     }
                 }
+                [2, 24, 5, 6, 5, 6, 5, 5, 25, 35].eachWithIndex { width, idx -> sheet.setColumnWidth(idx, width * 365) }
                 allTableAry.eachWithIndex { tableName, tableIdx ->
                     def targetCount = null
                     def orgCount = null
@@ -294,8 +300,10 @@ class DatabaseDiff {
                                 }
                                 if (idx == 1 && linkTableNames[tableName]) {
                                     cell.cellStyle = cellStyleMap.tBodyLink
-                                    HSSFHyperlink link = book.getCreationHelper().createHyperlink(HSSFHyperlink.LINK_FILE)
-                                    link.setAddress("${XLS_PREFIX}${target}-${org}_${XLS_SUFFIX}_${tableName}.xls" as String)
+//                                    HSSFHyperlink link = book.getCreationHelper().createHyperlink(HSSFHyperlink.LINK_FILE)
+//                                    link.setAddress("${XLS_PREFIX}${target}-${org}_${XLS_SUFFIX}_${tableName}.xls" as String)
+                                    HSSFHyperlink link = book.getCreationHelper().createHyperlink(HSSFHyperlink.LINK_DOCUMENT)
+                                    link.setAddress("${linkTableNames[tableName]}!A1" as String)
                                     cell.setHyperlink(link)
                                 }
                             }
@@ -318,7 +326,7 @@ class DatabaseDiff {
                         row.createCell(columnIdx + 1).with { HSSFCell cell -> cell.cellStyle = cellStyleMap.tHeader; cell.setCellValue(columnName) }
                     }
                     headerColumns.eachWithIndex { String columnName, int columnIdx ->
-                        row.createCell(columnIdx + headerColumns.size() + 1).with { HSSFCell cell -> cell.cellStyle = cellStyleMap.oHeader; cell.setCellValue(PREFIX + columnName) }
+                        row.createCell(columnIdx + headerColumns.size() + 1).with { HSSFCell cell -> cell.cellStyle = cellStyleMap.oHeader; cell.setCellValue(columnName) }
                     }
                 }
                 def tRows = rows(db, "SELECT * FROM dba_tables WHERE owner = '${target}'" as String)
@@ -337,7 +345,7 @@ class DatabaseDiff {
                         headerColumns.eachWithIndex { String columnName, int idx ->
                             row.createCell(idx + 1).with { HSSFCell cell ->
                                 cell.cellStyle = cellStyleMap.tBody
-                                cell.setCellValue(tRow[columnName])
+                                cell.setCellValue(tRow[columnName] instanceof Number ? tRow[columnName] : tRow[columnName].toString())
                                 if (tRow[columnName] != oRow[columnName]) {
                                     cell.cellStyle = cellStyleMap.tBodyAlert
                                 }
@@ -346,7 +354,7 @@ class DatabaseDiff {
                         headerColumns.eachWithIndex { String columnName, int idx ->
                             row.createCell(idx + headerColumns.size() + 1).with { HSSFCell cell ->
                                 cell.cellStyle = cellStyleMap.oBody
-                                cell.setCellValue(oRow[columnName])
+                                cell.setCellValue(oRow[columnName] instanceof Number ? oRow[columnName] : oRow[columnName].toString())
                                 if (tRow[columnName] != oRow[columnName]) {
                                     cell.cellStyle = cellStyleMap.oBodyAlert
                                 }
@@ -356,7 +364,9 @@ class DatabaseDiff {
                 }
                 sheet.createFreezePane(1, 1)
             }
+            book.setSheetOrder("TableStatus", 0)
             book.setSheetOrder("AllTables", 0)
+            book.setActiveSheet(0)
             new File(XLS_OUTPUT_DIR).mkdirs()
             def fileName = "${XLS_OUTPUT_DIR}/${XLS_PREFIX}${target}-${org}_${XLS_SUFFIX}.xls"
             logger.info("Create xls file - ${fileName}")
@@ -512,6 +522,7 @@ WHERE rownum <= $CURSOR_LIMIT""" as String //if use limit
             u(longOpt: 'user', args: 1, argName: 'username', 'username for database connection')
             p(longOpt: 'pass', args: 1, argName: 'password', 'password for database connection')
             l(longOpt: 'limit', args: 1, argName: 'limit', 'limit count of all row mode')
+            a(longOpt: 'allrow', 'all row mode (default: diff mode)')
         }
         def opt = cli.parse(args)
         if (!opt) System.exit(1)
@@ -527,12 +538,10 @@ WHERE rownum <= $CURSOR_LIMIT""" as String //if use limit
                 System.exit(1)
             }
         }
-        def configFile = new File(new File(scriptDir).parent, 'Config.groovy').path
+        def configFile
         def config
         try {
-            if (opt.c) {
-                configFile = opt.c
-            }
+            configFile = (opt.c) ? opt.c : new File(new File(scriptDir).parent, 'Config.groovy').path
             config = new ConfigSlurper().parse(new File(configFile).toURL())
         } catch (e) {
             printErr "Error: can't read the config file. path: ${configFile}"
@@ -549,7 +558,8 @@ WHERE rownum <= $CURSOR_LIMIT""" as String //if use limit
                     pass: (opt.p ? opt.p : config.database.pass),
                     limit: (opt.l ? Integer.parseInt(opt.l) : 65535),  // データ比較シートで出力する最大行数
                     pkColumn: 3, // PKが無い場合先頭から3個のカラムをPKとして取り扱う
-                    config: config
+                    defaultAllRowMode: (opt.a ? true : false), // デフォルトは false
+                    config: config,
             )
             runner.run(
                     (opt.arguments()[0] as String).toUpperCase(), (opt.arguments()[1] as String).toUpperCase()
