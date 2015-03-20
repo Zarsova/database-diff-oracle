@@ -123,7 +123,7 @@ class DatabaseDiff {
             def linkTableNames = [:]
             allTableAry.eachWithIndex { String tableName, int tableIdx ->
                 // sheet tableName
-                logger.info("Create new sheet- ${tableName}")
+                logger.info("Create new sheet - ${tableName}")
                 try {
                     def replaceCols = [:]
                     db.query(createUnionQuery(db, tableName, target, org, replaceCols)) { ResultSet resultSet ->
@@ -232,10 +232,10 @@ class DatabaseDiff {
                                         rowIdx++
                                     }
                                     cursorIdx++
-                                    if ((cursorIdx) % 10000 == 0) logger.info("Create xls: ${tableName}, cursor: ${cursorIdx}, output: ${rowIdx}${(allRowMode ? "" : ", diff mode")}")
+                                    if ((cursorIdx) % 10000 == 0) logger.info("Create sheet: ${sheet.sheetName}, cursor: ${cursorIdx}, output: ${rowIdx - 1}${(allRowMode ? "" : ", diff mode")}")
                                     if (rowIdx > limit) break
-
                                 }
+                                logger.info("Create sheet: ${sheet.sheetName}, cursor: ${cursorIdx}, output: ${rowIdx - 1}${(allRowMode ? "" : ", diff mode")}")
                             }
                         } catch (IllegalArgumentException e) {
                             logger.error "Error in ${tableName}: ${e}"
@@ -441,7 +441,7 @@ ORDER BY cols.table_name, cols.position""" as String).each { row ->
                     }
                 }
             }
-            logger.info("Find primary key(${pkColumn}dummy): ${keys}")
+            logger.info("Find primary key(dummy: ${pkColumn}): ${keys}")
         }
         attrTablePrimaryKey[table] = keys
         keys
